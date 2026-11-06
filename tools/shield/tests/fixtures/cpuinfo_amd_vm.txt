@@ -1,0 +1,4 @@
+processor	: 0
+vendor_id	: AuthenticAMD
+model name	: AMD EPYC Processor
+flags		: fpu vme de pse tsc msr hypervisor

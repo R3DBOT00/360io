@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "kind": "native-exception",
+  "id": "360io-desktop",
+  "binary": "/usr/bin/360io-desktop",
+  "desktop_entry": "360io-desktop.desktop",
+  "sandbox": "none",
+  "scripts": ["/usr/bin/360io-desktop"],
+  "reason": "Desktop Mode is a regular XFCE or KDE Plasma (X11) session of the host user, nested in a Xephyr window; confining it would hide the host it exists to expose.",
+  "scope": "Runs Xephyr, dbus-run-session and startxfce4 or startplasma-x11 as the invoking user with no added privileges; no bwrap, flatpak, containers, namespaces or VMs."
+}

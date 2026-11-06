@@ -1,0 +1,21 @@
+[Unit]
+Description=360io recovery request detection (Shift held or 360io.recovery=1)
+Documentation=file:///usr/share/doc/360io/recovery-mode.md
+DefaultDependencies=no
+After=systemd-udev-trigger.service systemd-udevd.service systemd-tmpfiles-setup.service
+Wants=systemd-udev-trigger.service
+Before=display-manager.service 360io-recovery.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Exit 1 means "no recovery" and 2 a detection error; neither may block boot.
+# A failed evdev read leaves 360io.recovery=1 on the kernel cmdline as the
+# fallback, which the display-manager drop-in and session unit check directly.
+ExecStart=-/usr/lib/360io/360io-recovery-detect --timeout-ms 1500
+TimeoutStartSec=5s
+StandardOutput=journal
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,33 @@
+# Direct XFCE session on seat0/VT7 for user %i, only when recovery was
+# requested for this boot. Enable per user:
+#   systemctl add-wants 360io-recovery.target 360io-recovery-session@USER.service
+[Unit]
+Description=360io recovery XFCE session for %i
+Documentation=file:///usr/share/doc/360io/recovery-mode.md
+After=360io-recovery-detect.service systemd-user-sessions.service systemd-logind.service plymouth-quit-wait.service
+Wants=360io-recovery-detect.service
+ConditionPathExists=|/run/360io/recovery-requested
+ConditionKernelCommandLine=|360io.recovery=1
+
+[Service]
+Type=simple
+User=%i
+PAMName=login
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty7
+UtmpMode=user
+Environment=XDG_SESSION_TYPE=x11 XDG_SESSION_CLASS=user XDG_SEAT=seat0 XDG_VTNR=7
+ExecStartPre=-/usr/bin/plymouth quit --retain-splash
+ExecStart=/usr/lib/360io/360io-recovery-session
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+Restart=no
+
+[Install]
+WantedBy=360io-recovery.target

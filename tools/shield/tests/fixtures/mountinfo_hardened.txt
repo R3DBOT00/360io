@@ -1,0 +1,11 @@
+22 1 254:1 / / rw,relatime shared:1 - btrfs /dev/mapper/root rw,ssd,space_cache=v2,subvol=/@
+23 22 0:5 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw,hidepid=invisible,gid=26
+24 22 0:6 / /dev rw,nosuid shared:2 - devtmpfs devtmpfs rw,size=8068040k,mode=755
+25 24 0:26 / /dev/shm rw,nosuid,nodev shared:3 - tmpfs tmpfs rw
+90 25 0:26 / /dev/shm rw,nosuid,nodev,noexec shared:4 - tmpfs tmpfs rw
+26 22 0:41 / /tmp rw,nosuid,nodev,noexec shared:5 - tmpfs tmpfs rw,size=4g
+27 22 259:1 / /boot rw,nosuid,nodev,noexec,relatime shared:6 - vfat /dev/nvme0n1p1 rw,fmask=0077
+28 22 0:44 /@home /home rw,nodev,nosuid,relatime shared:7 - btrfs /dev/mapper/root rw,subvol=/@home
+29 22 0:45 / /mnt/My\040Disk rw,relatime shared:8 - ext4 /dev/sdb1 rw
+this line is malformed and must be ignored
+30 22 0:46 / /broken rw - 

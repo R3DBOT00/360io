@@ -1,0 +1,10 @@
+[Unit]
+Description=360io recovery mode (direct XFCE session instead of the 360io shell)
+Documentation=file:///usr/share/doc/360io/recovery-mode.md
+Wants=360io-recovery-detect.service
+After=360io-recovery-detect.service multi-user.target
+ConditionPathExists=|/run/360io/recovery-requested
+ConditionKernelCommandLine=|360io.recovery=1
+
+[Install]
+WantedBy=graphical.target

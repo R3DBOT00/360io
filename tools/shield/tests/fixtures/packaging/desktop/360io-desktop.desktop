@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=360io Desktop
+GenericName=Desktop Mode
+Comment=XFCE or KDE Plasma desktop session in a window; close it to return to 360io
+Exec=/usr/bin/360io-desktop
+TryExec=/usr/bin/360io-desktop
+Icon=user-desktop
+Terminal=false
+StartupNotify=false
+Categories=System;
+Keywords=360io;desktop;xfce;kde;plasma;
+Actions=xfce;kde;
+X-360io-Shield-Exception=360io-desktop
+X-360io-Sandbox=none
+
+[Desktop Action xfce]
+Name=XFCE
+Exec=/usr/bin/360io-desktop --session xfce
+
+[Desktop Action kde]
+Name=KDE Plasma
+Exec=/usr/bin/360io-desktop --session kde

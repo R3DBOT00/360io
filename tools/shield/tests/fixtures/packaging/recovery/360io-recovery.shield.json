@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "kind": "native-exception",
+  "id": "360io-recovery",
+  "binary": "/usr/lib/360io/360io-recovery-detect",
+  "sandbox": "none",
+  "scripts": [
+    "/usr/lib/360io/360io-recovery-session",
+    "/usr/lib/360io/360io-recovery-xinitrc",
+    "/usr/lib/360io/360io-recovery-notice"
+  ],
+  "units": [
+    "/usr/lib/systemd/system/360io-recovery-detect.service",
+    "/usr/lib/systemd/system/360io-recovery.target",
+    "/usr/lib/systemd/system/360io-recovery-session@.service",
+    "/usr/lib/systemd/system/display-manager.service.d/360io-recovery.conf"
+  ],
+  "reason": "Recovery mode replaces the 360io shell with a plain XFCE session on the physical seat so the user can repair the host; it must see the real host.",
+  "scope": "Detection only reads /proc/cmdline and evdev key state and writes the ephemeral /run/360io/recovery-requested flag; the session runs as the configured user via PAM/logind with no added privileges and no namespaces."
+}

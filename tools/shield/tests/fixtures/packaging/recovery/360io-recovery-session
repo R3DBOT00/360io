@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Starts X directly on this unit's VT and runs the recovery XFCE session.
+# Invoked by 360io-recovery-session@.service as the target user.
+set -uo pipefail
+
+readonly LIBDIR=${THREESIXTY_RECOVERY_LIBDIR:-/usr/lib/360io}
+vt=${XDG_VTNR:-7}
+
+missing=()
+for tool in startx dbus-run-session; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+done
+if ! command -v startxfce4 >/dev/null 2>&1 && ! command -v xfce4-session >/dev/null 2>&1; then
+    missing+=("startxfce4|xfce4-session")
+fi
+if ((${#missing[@]})); then
+    echo "360io-recovery-session: missing dependencies: ${missing[*]}" >&2
+    exit 3
+fi
+
+echo "360io-recovery-session: starting XFCE on vt$vt" >&2
+cd "$HOME" || cd /
+exec startx "$LIBDIR/360io-recovery-xinitrc" -- "vt$vt" -keeptty -nolisten tcp

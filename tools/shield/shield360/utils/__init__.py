@@ -1,0 +1,1 @@
+"""Shared read-only helpers."""

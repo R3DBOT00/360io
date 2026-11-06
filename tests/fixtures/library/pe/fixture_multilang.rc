@@ -1,0 +1,25 @@
+// Two string tables: exercises the language priority of §7.3.
+1 VERSIONINFO
+FILEVERSION 2,0,0,0
+PRODUCTVERSION 2,0,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "041604b0"
+    BEGIN
+      VALUE "ProductName", "Preferred Test Adventure"
+      VALUE "FileDescription", "Preferred test game"
+    END
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "ProductName", "Test Adventure"
+      VALUE "FileDescription", "Test game"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x416, 1200, 0x409, 1200
+  END
+END

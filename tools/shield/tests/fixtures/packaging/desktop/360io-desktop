@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+# 360io-desktop: run a full XFCE or KDE Plasma (X11) session inside a native
+# Xephyr window.
+#
+# Runs directly on the host as the invoking user. There is deliberately no
+# confinement layer (see docs/desktop-mode.md and the Shield native
+# exception manifest). Closing the window ends the session and returns
+# control to whoever launched us (normally the 360io shell).
+#
+# Exit codes: 0 normal close, 2 usage, 3 missing dependency,
+#             4 already running, 5 display server failed, 6 session failed.
+
+set -uo pipefail
+
+readonly PROG=360io-desktop
+readonly DISPLAY_FIRST=${THREESIXTY_DESKTOP_DISPLAY_FIRST:-20}
+readonly DISPLAY_LAST=${THREESIXTY_DESKTOP_DISPLAY_LAST:-99}
+readonly X11_DIR=${THREESIXTY_DESKTOP_X11_DIR:-/tmp/.X11-unix}
+readonly XLOCK_DIR=${THREESIXTY_DESKTOP_XLOCK_DIR:-/tmp}
+readonly READY_TIMEOUT=${THREESIXTY_DESKTOP_READY_TIMEOUT:-15}
+readonly STOP_GRACE=${THREESIXTY_DESKTOP_STOP_GRACE:-3}
+readonly START_ATTEMPTS=3
+readonly LOG_KEEP_LINES=400
+SCREEN=${THREESIXTY_DESKTOP_SCREEN:-1600x900}
+KIND=${THREESIXTY_DESKTOP_KIND:-auto}
+PROFILE_STATE=${THREESIXTY_PROFILE_STATE:-/var/lib/360io/desktop-profile}
+FIRSTRUN=${THREESIXTY_FIRSTRUN:-/usr/lib/360io/360io-firstrun}
+TITLE="360io Desktop"
+
+runtime_base=${XDG_RUNTIME_DIR:-/tmp/360io-$(id -u)}
+state_base=${XDG_STATE_HOME:-$HOME/.local/state}
+lock_file=$runtime_base/360io/desktop.lock
+log_file=$state_base/360io/desktop.log
+choice_file=$state_base/360io/desktop-session
+
+work_dir=""
+xephyr_pid=""
+session_pid=""
+session_token=""
+display_num=""
+cleaned=0
+
+say() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+log() { [[ -n ${log_fd:-} ]] && printf '%s %s\n' "$(date +%T)" "$*" >&"$log_fd"; }
+note() { say "$*"; log "$*"; }
+
+usage() {
+    cat <<EOF
+Usage: $PROG [--session xfce|kde|auto] [--screen WxH] [--check]
+
+Starts XFCE (startxfce4 or xfce4-session) or KDE Plasma (startplasma-x11 with
+kwin_x11) under dbus-run-session inside a resizeable Xephyr window. Close the
+window or log out to return to 360io.
+
+  --session S   xfce, kde or auto (default): when both desktops are
+                installed, ask (last choice or the installed desktop
+                profile preselected); otherwise use the installed one
+  --screen WxH  initial window size (default $SCREEN)
+  --check       verify dependencies and exit
+EOF
+}
+
+have_xfce() { command -v startxfce4 >/dev/null 2>&1 || command -v xfce4-session >/dev/null 2>&1; }
+have_kde() { command -v startplasma-x11 >/dev/null 2>&1 && command -v kwin_x11 >/dev/null 2>&1; }
+
+# First start of Desktop Mode on an installed system: the one-time desktop
+# profile choice (XFCE Minimal / KDE Plasma, 360io-firstrun). It is asked here
+# and not at login; it does nothing once the choice is recorded. Runs before
+# choose_session so a freshly installed KDE Plasma is offered right away.
+run_firstrun() {
+    [[ -x $FIRSTRUN ]] || return 0
+    "$FIRSTRUN" --desktop-mode </dev/null || true
+}
+
+# Resolves KIND=auto to xfce or kde. Returns 1 when the user cancelled the
+# chooser (Desktop Mode then ends normally).
+choose_session() {
+    [[ $KIND == xfce || $KIND == kde ]] && return 0
+    if ! have_kde; then KIND=xfce; return 0; fi
+    if ! have_xfce; then KIND=kde; return 0; fi
+    local def=xfce saved
+    saved=$(head -n 1 "$choice_file" 2>/dev/null)
+    if [[ $saved == xfce || $saved == kde ]]; then
+        def=$saved
+    elif [[ $(head -n 1 "$PROFILE_STATE" 2>/dev/null) == kde ]]; then
+        def=kde
+    fi
+    KIND=$def
+    if [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]] && command -v zenity >/dev/null 2>&1; then
+        local x=FALSE k=FALSE answer
+        if [[ $def == kde ]]; then k=TRUE; else x=TRUE; fi
+        answer=$(zenity --list --radiolist --title "$TITLE" \
+            --text "Choose a desktop for this Desktop Mode session." \
+            --width 460 --height 230 --column "" --column "id" --column "Desktop" --hide-column 2 \
+            "$x" xfce "XFCE" "$k" kde "KDE Plasma" 2>/dev/null) || return 1
+        [[ $answer == xfce || $answer == kde ]] || return 1
+        KIND=$answer
+    fi
+    mkdir -p "${choice_file%/*}" 2>/dev/null && printf '%s\n' "$KIND" >"$choice_file" 2>/dev/null
+    return 0
+}
+
+# Missing tools are reported together so packagers see everything at once.
+check_deps() {
+    local missing=() tool
+    for tool in Xephyr dbus-run-session xauth; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    if [[ $KIND == kde ]]; then
+        for tool in startplasma-x11 kwin_x11; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+        done
+    elif ! have_xfce; then
+        missing+=("startxfce4|xfce4-session")
+    fi
+    if ((${#missing[@]})); then
+        say "missing dependencies: ${missing[*]}"
+        return 3
+    fi
+    return 0
+}
+
+display_in_use() {
+    local n=$1
+    [[ -e $X11_DIR/X$n || -e $XLOCK_DIR/.X$n-lock ]]
+}
+
+# Prints the first display number with neither socket nor lock file.
+find_free_display() {
+    local n
+    for ((n = DISPLAY_FIRST; n <= DISPLAY_LAST; n++)); do
+        display_in_use "$n" || { printf '%s\n' "$n"; return 0; }
+    done
+    return 1
+}
+
+acquire_lock() {
+    mkdir -p -m 0700 "${lock_file%/*}" || return 4
+    exec {lock_fd}>"$lock_file" || return 4
+    if ! flock -n "$lock_fd"; then
+        say "already running (lock $lock_file)"
+        return 4
+    fi
+}
+
+open_log() {
+    mkdir -p -m 0700 "${log_file%/*}" 2>/dev/null
+    [[ -f $log_file ]] && mv -f "$log_file" "$log_file.1" 2>/dev/null
+    exec {log_fd}>>"$log_file" || { log_fd=""; return 0; }
+    chmod 0600 "$log_file" 2>/dev/null
+}
+
+trim_log() {
+    [[ -f $log_file ]] || return 0
+    local tmp=$log_file.tmp
+    tail -n "$LOG_KEEP_LINES" "$log_file" >"$tmp" 2>/dev/null && mv -f "$tmp" "$log_file"
+}
+
+# PIDs of every process owned by us that still carries the session token in
+# its environment. This finds XFCE children that double-forked or called
+# setsid, which a process-group kill would miss.
+token_pids() {
+    local proc pid
+    for proc in /proc/[0-9]*; do
+        pid=${proc#/proc/}
+        [[ $pid == "$$" || $pid == "$BASHPID" ]] && continue
+        [[ -O $proc ]] || continue
+        grep -qzxF "THREESIXTY_DESKTOP_SESSION=$session_token" "$proc/environ" 2>/dev/null \
+            && printf '%s\n' "$pid"
+    done
+}
+
+alive() { [[ -n $1 ]] && kill -0 "$1" 2>/dev/null; }
+
+# TERM, wait up to STOP_GRACE seconds, then KILL.
+stop_pids() {
+    local pids=("$@") pid deadline
+    ((${#pids[@]})) || return 0
+    kill -TERM "${pids[@]}" 2>/dev/null
+    deadline=$((SECONDS + STOP_GRACE))
+    while ((SECONDS < deadline)); do
+        local left=0
+        for pid in "${pids[@]}"; do alive "$pid" && left=1; done
+        ((left)) || return 0
+        sleep 0.1
+    done
+    kill -KILL "${pids[@]}" 2>/dev/null
+}
+
+cleanup() {
+    ((cleaned)) && return
+    cleaned=1
+    trap - EXIT INT TERM HUP
+    local pids=()
+    alive "$session_pid" && pids+=("-$session_pid" "$session_pid")
+    if [[ -n $session_token ]]; then
+        mapfile -t -O "${#pids[@]}" pids < <(token_pids)
+    fi
+    stop_pids "${pids[@]}"
+    if alive "$xephyr_pid"; then stop_pids "$xephyr_pid"; fi
+    [[ -n $session_pid ]] && wait "$session_pid" 2>/dev/null
+    [[ -n $xephyr_pid ]] && wait "$xephyr_pid" 2>/dev/null
+    # Leftovers from token scan (e.g. processes that ignored TERM) get KILL.
+    if [[ -n $session_token ]]; then
+        mapfile -t pids < <(token_pids)
+        ((${#pids[@]})) && kill -KILL "${pids[@]}" 2>/dev/null
+    fi
+    [[ -n $work_dir ]] && rm -rf -- "$work_dir"
+    log "stopped"
+    trim_log
+}
+
+on_signal() {
+    note "received $1, closing session"
+    cleanup
+    exit 0
+}
+
+# Starts Xephyr on display $1; returns 0 once it reports readiness.
+start_xephyr() {
+    local n=$1 fifo=$work_dir/ready.$1 line=""
+    rm -f "$fifo"
+    mkfifo -m 0600 "$fifo" || return 5
+    xauth -q -f "$work_dir/Xauthority" add ":$n" . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" \
+        >/dev/null 2>&1 || { note "xauth failed"; return 5; }
+    Xephyr ":$n" -displayfd 3 -auth "$work_dir/Xauthority" -title "$TITLE" \
+        -screen "$SCREEN" -resizeable -nolisten tcp -noreset \
+        3>"$fifo" {lock_fd}>&- </dev/null >&"${log_fd:-2}" 2>&1 &
+    xephyr_pid=$!
+    # -displayfd writes the display number once the server accepts clients;
+    # EOF (Xephyr died) or timeout both mean failure.
+    { read -r -t "$READY_TIMEOUT" line <"$fifo"; } 2>/dev/null
+    rm -f "$fifo"
+    if [[ $line == "$n" ]] && alive "$xephyr_pid"; then
+        return 0
+    fi
+    alive "$xephyr_pid" && stop_pids "$xephyr_pid"
+    wait "$xephyr_pid" 2>/dev/null
+    xephyr_pid=""
+    return 5
+}
+
+start_session() {
+    local cmd=(startxfce4) desktop=XFCE session_desktop=xfce session_name=xfce menu_prefix=xfce-
+    command -v startxfce4 >/dev/null 2>&1 || cmd=(xfce4-session)
+    if [[ $KIND == kde ]]; then
+        # dbus-run-session hides the systemd user manager, so Plasma uses its
+        # classic (non-systemd) startup and stays inside this session.
+        cmd=(startplasma-x11) desktop=KDE session_desktop=KDE session_name=plasmax11 menu_prefix=plasma-
+    fi
+    session_token=$$-$RANDOM$RANDOM
+    # Host session variables would point the nested desktop back at the outer
+    # compositor (or make Plasma believe it is already running). The LightDM
+    # seat/session D-Bus paths (XDG_SEAT_PATH, XDG_SESSION_PATH) make the
+    # nested XFCE offer "Switch user", which sends the whole host seat to the
+    # LightDM greeter.
+    env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SESSION_MANAGER \
+        -u XDG_SESSION_ID -u XDG_SEAT -u XDG_VTNR -u QT_QPA_PLATFORM -u SDL_VIDEODRIVER \
+        -u XDG_SEAT_PATH -u XDG_SESSION_PATH -u XDG_GREETER_DATA_DIR \
+        -u KDE_FULL_SESSION -u KDE_SESSION_VERSION -u KDE_SESSION_UID -u KDE_APPLICATIONS_AS_SCOPE \
+        DISPLAY=":$display_num" XAUTHORITY="$work_dir/Xauthority" \
+        XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=$desktop XDG_SESSION_DESKTOP=$session_desktop \
+        DESKTOP_SESSION=$session_name GDMSESSION=$session_name XDG_MENU_PREFIX=$menu_prefix \
+        GDK_BACKEND=x11 THREESIXTY_DESKTOP_SESSION="$session_token" \
+        setsid dbus-run-session -- "${cmd[@]}" {lock_fd}>&- </dev/null >&"${log_fd:-2}" 2>&1 &
+    session_pid=$!
+}
+
+main() {
+    local check_only=0
+    while (($#)); do
+        case $1 in
+            --screen)
+                [[ ${2:-} =~ ^[0-9]{3,5}x[0-9]{3,5}$ ]] || { usage >&2; return 2; }
+                SCREEN=$2; shift 2 ;;
+            --session)
+                [[ ${2:-} =~ ^(xfce|kde|auto)$ ]] || { usage >&2; return 2; }
+                KIND=$2; shift 2 ;;
+            --check) check_only=1; shift ;;
+            -h|--help) usage; return 0 ;;
+            *) usage >&2; return 2 ;;
+        esac
+    done
+
+    if ((check_only)); then
+        if [[ $KIND == auto ]]; then
+            KIND=xfce
+            have_kde && ! have_xfce && KIND=kde
+        fi
+        check_deps || return
+        say "dependencies ok ($KIND)"
+        return 0
+    fi
+    run_firstrun
+    choose_session || { say "no desktop chosen, returning to 360io"; return 0; }
+    check_deps || return
+    acquire_lock || return
+    open_log
+    work_dir=$(mktemp -d "$runtime_base/360io/desktop.XXXXXX") || return 5
+    trap cleanup EXIT
+    trap 'on_signal INT' INT
+    trap 'on_signal TERM' TERM
+    trap 'on_signal HUP' HUP
+
+    local attempt
+    for ((attempt = 1; attempt <= START_ATTEMPTS; attempt++)); do
+        display_num=$(find_free_display) || { note "no free X display in :$DISPLAY_FIRST-:$DISPLAY_LAST"; return 5; }
+        if start_xephyr "$display_num"; then
+            break
+        fi
+        note "Xephyr failed on :$display_num (attempt $attempt)"
+        display_num=""
+    done
+    [[ -n $display_num ]] || { note "display server failed"; return 5; }
+    note "Xephyr ready on :$display_num"
+
+    start_session
+    local label=XFCE
+    [[ $KIND == kde ]] && label="KDE Plasma"
+    note "$label session started (pid $session_pid)"
+
+    # Either side ending ends the whole Desktop Mode.
+    local status=0
+    wait -n "$xephyr_pid" "$session_pid"
+    status=$?
+    if ! alive "$xephyr_pid"; then
+        note "window closed, returning to 360io"
+        status=0
+    elif ! alive "$session_pid"; then
+        if ((status != 0)); then
+            note "$label session exited with status $status"
+            status=6
+        else
+            note "$label session ended, returning to 360io"
+        fi
+    fi
+    cleanup
+    return "$status"
+}
+
+main "$@"

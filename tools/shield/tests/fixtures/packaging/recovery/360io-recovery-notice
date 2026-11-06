@@ -1,0 +1,20 @@
+#!/bin/sh
+# Tells the user they are in recovery mode. Tries a dialog first, then a
+# desktop notification, then xmessage; always logs the text.
+readonly MESSAGE="You have entered recovery mode"
+delay=${THREESIXTY_RECOVERY_NOTICE_DELAY:-3}
+
+echo "360io-recovery: $MESSAGE" >&2
+# Let the window manager and notification daemon come up first.
+sleep "$delay"
+
+if command -v zenity >/dev/null 2>&1; then
+    zenity --info --title="360io" --no-wrap --text="$MESSAGE" && exit 0
+fi
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send --urgency=critical --app-name=360io "360io" "$MESSAGE" && exit 0
+fi
+if command -v xmessage >/dev/null 2>&1; then
+    xmessage -center "$MESSAGE" && exit 0
+fi
+exit 1

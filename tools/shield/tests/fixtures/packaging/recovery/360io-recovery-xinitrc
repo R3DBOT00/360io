@@ -1,0 +1,13 @@
+#!/bin/sh
+# xinitrc for the 360io recovery session: plain XFCE plus the entry notice.
+export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_DESKTOP=xfce
+export THREESIXTY_RECOVERY=1
+libdir=${THREESIXTY_RECOVERY_LIBDIR:-/usr/lib/360io}
+
+if command -v startxfce4 >/dev/null 2>&1; then
+    session=startxfce4
+else
+    session=xfce4-session
+fi
+exec dbus-run-session -- sh -c '"$1" & exec "$2"' recovery-xinitrc \
+    "$libdir/360io-recovery-notice" "$session"
